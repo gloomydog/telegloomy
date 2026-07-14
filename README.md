@@ -5,7 +5,7 @@ NAT. A public Nostr relay is used only to introduce two peers; once a direct
 path is punched through, all real traffic flows peer-to-peer and encrypted.
 A single pairing code (CPace PAKE) derives every channel key.
 
-**Docs:** [SECURITY.md](SECURITY.md) · [NAT-TRAVERSAL.md](NAT-TRAVERSAL.md) · [CONTRIBUTING.md](CONTRIBUTING.md)
+**Docs:** [SECURITY.md](SECURITY.md) · [NAT-TRAVERSAL.md](NAT-TRAVERSAL.md) 
 
 [![CI](https://github.com/gloomydog/telegloomy/actions/workflows/ci.yml/badge.svg)](https://github.com/gloomydog/telegloomy/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -27,9 +27,30 @@ A single pairing code (CPace PAKE) derives every channel key.
     src/main.c          end-to-end telegloomy binary
     tests/              test_candidate, test_punch, test_transport, test_app
 
+## Install dependencies
+ 
+**Arch Linux:**
+ 
+    sudo pacman -S base-devel libsodium cjson libsecp256k1 openssl opus pipewire
+ 
+**Ubuntu / Debian:**
+ 
+    sudo apt-get update
+    sudo apt-get install -y build-essential pkg-config \
+        libsodium-dev libcjson-dev libsecp256k1-dev libssl-dev \
+        libopus-dev libpipewire-0.3-dev
+ 
+`libsodium-dev`, `libcjson-dev`, `libsecp256k1-dev`, `libssl-dev` are required
+for the core build (chat + file transfer). `libopus-dev` and
+`libpipewire-0.3-dev` (Ubuntu) / `opus` and `pipewire` (Arch) are only needed
+for `make telegloomy-voice` (adds voice calls).
+ 
+If `libsecp256k1-dev` isn't available on your distro/version, build it from
+source: https://github.com/bitcoin-core/secp256k1
+
 ## Build
 Self-contained -- the needed pakechat_cli sources are vendored under
-`third_party/pakechat/`, so no external path is required.
+`third_party/pakechat/`(https://github.com/gloomydog/pakechat_cli), so no external path is required.
 
 System deps: libsodium, libcjson, libsecp256k1, openssl (+ opus, pipewire
 for the voice build).
@@ -111,7 +132,6 @@ Passphrase hardening:
   after the session keys are set up.
 
 Honest limitations:
-- The CPace / Nostr / WebSocket core (pakechat_cli) is not independently audited.
 - A relay sees metadata: the rendezvous tag, traffic volume, timing, and the
   ephemeral pubkey -- never plaintext.
 - After a successful punch the peer (and the STUN server) sees your public IP.
