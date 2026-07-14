@@ -179,10 +179,6 @@ minimising metadata.
 ---
 
 ## 10. Known limitations (out of scope)
-
-- The CPace / Nostr / WebSocket core (vendored from `pakechat_cli`) is reviewed
-  and fuzzed here, but **not independently audited**. For high-risk use, get a
-  professional cryptographic audit.
 - A relay sees metadata (tag, timing, volume, ephemeral pubkey).
 - After a direct connection, your public IP is visible to the peer and to the
   STUN server. Run over a VPN/WireGuard interface if you need to hide it.
