@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libsodium-dev libcjson-dev libsecp256k1-dev libssl-dev \
+            libopus-dev libpipewire-0.3-dev pkg-config
+
+      - name: Build (tests + telegloomy)
+        run: make
+
+      - name: Build telegloomy-voice
+        run: make telegloomy-voice
+
+      - name: Run unit tests
+        run: make test
+
+      - name: Clean
+        run: make clean
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libsodium-dev libcjson-dev libsecp256k1-dev libssl-dev \
+            libopus-dev pkg-config
+
+      - name: AddressSanitizer + UBSan (unit tests)
+        run: make asan
+
+      - name: ThreadSanitizer (concurrent send path + jitter buffer)
+        run: make tsan
+
+      - name: Fuzz parsers (ASAN + UBSan, quick pass)
+        run: make fuzz N=300000

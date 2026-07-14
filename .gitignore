@@ -1,0 +1,27 @@
+# build artifacts
+*.o
+.pobj/
+telegloomy
+telegloomy-voice
+test_candidate
+test_punch
+test_transport
+test_app
+test_voice
+test_race
+fuzz/fuzzer
+fuzz/corpus/
+
+# received files from live testing
+received_*
+
+# editor / OS cruft
+*.swp
+.DS_Store
+compile_commands.json
+.vscode/
+.idea/
+
+# core dumps
+core
+core.*
