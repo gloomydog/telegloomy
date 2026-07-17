@@ -149,25 +149,31 @@ a relay (telegloomy uses the Nostr fallback).
 
 ---
 
-## 5. Firewalls are a separate wall
+## 5. Firewalls are a separate wall — but a stateful one
 
 NAT is only the first gate. Even after a packet clears the router, the **host
-firewall** decides whether to hand it to the app. A host firewall that defaults
-to *deny incoming* (e.g. `ufw`'s default) will drop the peer's PING even though
-NAT traversal succeeded — and because punching is bidirectional, this shows up
-as an **asymmetric failure**: the side whose firewall is open sees "direct path
-established", while the side whose firewall is closed times out and falls back
-to relay.
+firewall** decides whether to hand it to the app. The good news: most host
+firewalls (`ufw`, `firewalld`, Windows Defender) are *stateful*. `ufw`'s default
+"deny incoming" ruleset still contains an early conntrack `RELATED,ESTABLISHED`
+accept, so any UDP packet belonging to a flow this host already sent out is let
+through.
 
-Because telegloomy binds a **fixed** UDP port, opening it is a single rule:
+Hole punching exploits exactly this. It's a simultaneous open: both peers fire
+outbound PINGs first, which create conntrack state on their own firewall. The
+peer's PING then arrives as part of an "established" UDP flow and is accepted —
+**even with `ufw` on and no explicit rule for the port**. In practice you rarely
+need to touch the host firewall at all.
+
+An explicit rule only matters at the edges: a stricter/stateless firewall, or the
+UDP conntrack entry expiring (it has a short idle timeout) before both sides have
+exchanged a packet. Because telegloomy binds a **fixed** UDP port, adding that
+belt-and-suspenders rule is a single line:
 
     sudo ufw allow 58712/udp                         # Linux / ufw
     New-NetFirewallRule -DisplayName "telegloomy" \  # Windows (PowerShell, admin)
       -Direction Inbound -Protocol UDP -LocalPort 58712 -Action Allow
 
-Both peers must open their own firewall for the punch (and thus voice) to work;
-otherwise the connection still succeeds over the slower relay path. Override the
-port with `P2P_PORT=<port>` if 58712 is taken.
+Override the port with `P2P_PORT=<port>` if 58712 is taken.
 
 ---
 

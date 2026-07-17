@@ -27,3 +27,5 @@ core
 core.*
 
 telegloomy_ver*
+# Added by code-review-graph
+.code-review-graph/

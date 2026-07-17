@@ -1,9 +1,5 @@
 # telegloomy_cli: E2E encrypted P2P chat  
-------------
 
-**WIP**
-
-------------
 Serverless, end-to-end encrypted P2P **chat / file transfer / voice** over
 NAT. A public Nostr relay is used only to introduce two peers; once a direct
 path is punched through, all real traffic flows peer-to-peer and encrypted.
@@ -64,18 +60,23 @@ for the voice build).
     make telegloomy-voice       # ./telegloomy with voice (Opus + PipeWire)
 
 ## Firewall
-telegloomy binds a FIXED UDP port (default 58712, same for both create and join) so a
-firewall only needs one rule instead of a different random port every run:
+telegloomy binds a FIXED UDP port (default 58712, same for both create and join).
+Most host firewalls (ufw, firewalld, Windows Defender) are *stateful*: even with
+the default "deny incoming", they still accept the return traffic for a UDP flow
+the host already sent out (conntrack `RELATED,ESTABLISHED`). Because hole punching
+is a simultaneous open -- both peers fire outbound PINGs first -- the peer's PING
+arrives as part of an already-established flow and is let through. **You can leave
+ufw on and hole punching still works; you usually don't need to open anything.**
+
+If you want to be robust against edge cases -- a stricter/stateless firewall, or
+the short UDP conntrack entry timing out before both sides exchange a packet --
+opening the fixed port is a single rule:
 
     sudo ufw allow 58712/udp     # Linux/ufw; adjust for your firewall
 
 Override the port with `P2P_PORT=<port>` if 58712 is taken (the default was
 chosen to avoid the WireGuard-standard 51820, which VPN setups often claim). Both peers can use
 different ports -- each just opens its own port on its own firewall.
-Without this, hole punching can fail asymmetrically: if either side's firewall
-defaults to "deny incoming" (ufw's default), packets from the peer never reach
-the app even though the peer's side looks fine, and you fall back to the
-slower/voice-disabled relay path.
 
 ## Run
     ./telegloomy create <passphrase> [relay_host]     # peer A prints/uses the passphrase
