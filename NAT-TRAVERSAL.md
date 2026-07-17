@@ -80,16 +80,44 @@ of the peer's candidates, repeating every ~60 ms:
 
 The first PINGs are usually dropped by the far NAT — but each one **opens the
 local mapping** on the way out. Once both sides have sent, both mappings are
-open, and subsequent packets get through. When a peer receives a PING it replies
-with a **PONG** echoing the challenge; when a peer receives a valid PONG for a
-challenge it sent, that `(local socket, remote ip:port)` pair is confirmed as a
-working bidirectional path, the socket is `connect()`ed to it, and punching
-stops. PING/PONG are authenticated (crypto_auth over a K-derived key), so stray
-or spoofed packets are ignored.
+open, and subsequent packets get through.
+
+**Packet shape.** PING/PONG are deliberately shaped like STUN Binding
+Requests/Responses — the real STUN magic cookie (`0x2112A442`), STUN message
+types (`0x0001`/`0x0101`), and an 8-byte challenge tucked into the 12-byte
+transaction-id field. Some carrier and mobile networks treat unrecognised small
+UDP payloads differently from STUN traffic, and looking like STUN measurably
+improves reachability. A real STUN server that receives one just ignores it (the
+transaction id matches nothing it issued). Every packet also carries a
+`crypto_auth` MAC over its header, keyed by a K-derived subkey, appended after
+the STUN header — so the punch is **authenticated**: stray, forged, or injected
+packets (and stray real STUN responses) fail the MAC and are dropped. Because K
+comes from the PAKE *before* punching, this MAC is a genuine secret, not a
+world-readable token.
+
+**Confirmation is on the *actual source*, never the advertised candidate.** When
+a peer receives a valid PING it replies with a **PONG** echoing the challenge,
+and takes the address the PING *actually arrived from* as the path — a peer's
+NAT may map a different port toward us than the one it advertised (common on
+carrier NAT), and that arrival address is the only one that works. Receiving
+either an authenticated PING or a PONG that echoes our own fresh challenge
+confirms the path; the socket is `connect()`ed to that source and punching
+stops. (The fresh challenge on the PONG route also stops a captured PONG being
+replayed.)
 
 Because *all* candidates are raced in parallel, the fastest working path wins
 naturally — e.g. a direct IPv6 or same-LAN host path confirms almost instantly,
 while an srflx path takes a round trip through the public internet.
+
+### 3.6a Keepalive
+Once the path is `connect()`ed, a background thread keeps sending punch PINGs to
+the peer every ~15 s. This holds the NAT mapping and stateful-firewall entry
+open — Linux conntrack expires idle UDP after 30 s (unconfirmed) to 120 s, and
+carrier NATs are far more aggressive, so an idle chat with no keepalive would
+silently lose its mapping. The keepalive doubles as continued punching: a peer
+that has not confirmed yet will confirm on the next keepalive PING it receives.
+Inbound keepalives arrive on the same socket and are dropped by the transport
+(they fail its AEAD), so they never reach the application.
 
 ### 3.7 IPv6 / dual-stack
 The socket is `AF_INET6` with `IPV6_V6ONLY=0`, so it handles both IPv6 and
@@ -152,7 +180,8 @@ port with `P2P_PORT=<port>` if 58712 is taken.
         │
     seal + exchange candidates over Nostr (PAKE key)
         │
-    simultaneous authenticated PING/PONG to all candidates
+    simultaneous STUN-shaped, MAC-authenticated PING/PONG to all candidates
+        │   (confirm on the peer's ACTUAL source address, not the advertised one)
         │
-        ├─ a path confirms ──▶ connect() ──▶ direct encrypted transport
+        ├─ a path confirms ──▶ connect() ──▶ keepalive ──▶ direct encrypted transport
         └─ 10s timeout      ──▶ relay-over-Nostr fallback (chat/file, no voice)

@@ -25,3 +25,5 @@ compile_commands.json
 # core dumps
 core
 core.*
+
+telegloomy_ver*

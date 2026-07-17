@@ -159,6 +159,7 @@ int main(int argc, char **argv){
         inet_ntop(chosen.family==6?AF_INET6:AF_INET, chosen.addr, ipbuf, sizeof ipbuf);
         fprintf(stderr,"[+] direct path established (%s) -> %s:%u\n",
                 chosen.family==6?"IPv6":"IPv4", ipbuf, chosen.port);
+        punch_start_keepalive(fd, pc.key, 15000);   /* hold the NAT mapping / conntrack open */
         signaling_close(sig); sig=NULL;
     } else {
         fprintf(stderr,"[!] hole punch failed -- relaying over Nostr (chat ok; file slow; voice off)\n");
@@ -244,6 +245,7 @@ int main(int argc, char **argv){
 #ifdef WITH_VOICE
     if (in_call){ audio_pw_quit(); pthread_join(vthr,NULL); voice_free(voice); }
 #endif
+    punch_stop_keepalive();   /* no-op if we fell back to relay */
     app_free(app); transport_free(t); if (sig) signaling_close(sig); close(fd);
     printf("\nbye.\n");
     return 0;
