@@ -1,5 +1,9 @@
-# telegloomy_cli: E2E encrypted P2P chat  **WIP**
+# telegloomy_cli: E2E encrypted P2P chat  
+------------
 
+**WIP**
+
+------------
 Serverless, end-to-end encrypted P2P **chat / file transfer / voice** over
 NAT. A public Nostr relay is used only to introduce two peers; once a direct
 path is punched through, all real traffic flows peer-to-peer and encrypted.
