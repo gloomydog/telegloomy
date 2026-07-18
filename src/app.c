@@ -28,6 +28,16 @@ struct app {
 
 static struct in_file *in_find(app_t *a, uint32_t id){ for(int i=0;i<MAX_FILES;i++) if(a->in[i].used&&a->in[i].id==id) return &a->in[i]; return NULL; }
 
+/* Peer-supplied filenames are untrusted: collapse to a bare basename so a
+ * received name can never carry a path separator or climb directories when a
+ * caller turns it into an output path. */
+static void sanitize_name(char *name){
+    char *base=name;
+    for (char *s=name; *s; s++) if (*s=='/'||*s=='\\') base=s+1;   /* keep last component */
+    if (base!=name) memmove(name, base, strlen(base)+1);
+    if (name[0]==0 || strcmp(name,".")==0 || strcmp(name,"..")==0) strcpy(name,"file");
+}
+
 static void on_reliable(void *u, const uint8_t *d, size_t len){
     app_t *a=u; if(len<1) return;
     if (d[0]==APP_BYE){ if(a->on_bye) a->on_bye(a->user); return; }
@@ -36,9 +46,14 @@ static void on_reliable(void *u, const uint8_t *d, size_t len){
         if (len<1+4+8+4+32) return;
         uint32_t id=g32(d+1); uint64_t total=g64(d+5); /*uint32_t cs=g32(d+13);*/
         const uint8_t *hash=d+17; const char *name=(const char*)d+49; size_t nlen=len-49;
+        if (total>APP_MAX_FILE) return;              /* implausible size: don't allocate for it */
+        if (in_find(a,id)) return;                    /* ignore a duplicate offer for the same id */
         for(int i=0;i<MAX_FILES;i++) if(!a->in[i].used){ struct in_file*f=&a->in[i];
-            f->used=1; f->done=0; f->id=id; f->total=total; f->got=0; f->data=malloc(total?total:1);
+            uint8_t *buf=malloc(total?total:1);
+            if(!buf) return;                          /* out of memory: drop the offer, stay alive */
+            f->used=1; f->done=0; f->id=id; f->total=total; f->got=0; f->data=buf;
             memcpy(f->hash,hash,32); if(nlen>255){nlen=255;} memcpy(f->name,name,nlen); f->name[nlen]=0;
+            sanitize_name(f->name);
             if(a->on_file) a->on_file(a->user,id,f->name,0,total,0,0);
             break;
         }

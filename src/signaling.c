@@ -68,7 +68,7 @@ static void parse_relay(const char *in, char *host, size_t hcap, int *port) {
     if (strncmp(h,"wss://",6)==0) h+=6; else if (strncmp(h,"ws://",5)==0){ h+=5; *port=80; }
     strncpy(host,h,hcap-1); host[hcap-1]=0;
     char *sl=strchr(host,'/'); if(sl)*sl=0;
-    char *co=strchr(host,':'); if(co){*co=0; *port=atoi(co+1);}
+    char *co=strchr(host,':'); if(co){*co=0; int p=atoi(co+1); if(p>0&&p<65536) *port=p;}  /* ignore out-of-range port, keep scheme default */
 }
 
 static int make_event(signaling_t *s, envelope_type_t type, const char *role,
@@ -190,8 +190,8 @@ signaling_t *signaling_open(const char *relay, const char *passphrase, int is_in
         fprintf(stderr, "[!] argon2 key-stretch failed (low memory?)\n");
         pthread_mutex_destroy(&s->lock); pthread_cond_destroy(&s->cond); free(s); return NULL;
     }
-    randombytes_buf(s->sub_id, 8);
-    sodium_bin2hex(s->sub_id, sizeof s->sub_id, (unsigned char*)s->sub_id, 8);
+    unsigned char sid[8]; randombytes_buf(sid, sizeof sid);
+    sodium_bin2hex(s->sub_id, sizeof s->sub_id, sid, sizeof sid);   /* separate src: no in-place aliasing */
 
     if (relay && *relay) add_relay(s, relay);
     for (int i=0;i<NDEFAULT;i++) add_relay(s, DEFAULT_RELAYS[i]);

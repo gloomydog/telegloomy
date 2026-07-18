@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
+#include <sodium.h>
 
 #define STUN_BINDING_REQUEST 0x0001
 #define STUN_BINDING_SUCCESS 0x0101
@@ -13,10 +14,11 @@
 #define STUN_ATTR_XOR_MAPPED 0x0020
 #define STUN_ATTR_MAPPED     0x0001
 
+/* STUN transaction ids must be unpredictable so an off-path attacker can't spoof
+ * a Binding response. Use libsodium's CSPRNG (self-seeding) rather than a
+ * best-effort /dev/urandom read that silently fell back to unseeded rand(). */
 static void fill_random(unsigned char *p, size_t n) {
-    FILE *f = fopen("/dev/urandom", "rb");
-    if (f) { if (fread(p,1,n,f)!=n) for (size_t i=0;i<n;i++) p[i]=rand()&0xff; fclose(f); return; }
-    for (size_t i=0;i<n;i++) p[i]=rand()&0xff;
+    randombytes_buf(p, n);
 }
 
 /* Parse (XOR-)MAPPED-ADDRESS for either family. IPv4 (family byte 0x01) yields a

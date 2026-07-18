@@ -25,10 +25,12 @@ static void *audio_thread(void *a){ audio_pw_run((voice_t*)a, 48000, 960); retur
 
 /* Punch attempts before falling back to relay, and the short barrier that
  * re-aligns both sides before each retry. Mirrors cwormhole's tuning. */
-#define PUNCH_RETRIES          3     /* env: PUNCH_RETRIES */
+#define PUNCH_RETRIES          5     /* env: PUNCH_RETRIES */
 #define PUNCH_TIMEOUT_MS       10000 /* per-attempt hole-punch window */
 #define PUNCH_SYNC_TIMEOUT_MS  5000  /* short barrier for per-retry candidate re-exchange */
 #define REFRESH_RESEND_MS      1500  /* re-publish our round candidates this often */
+#define PREPUNCH_WARM_MS       10000 /* re-STUN this often while awaiting the peer's 'C' */
+#define PREPUNCH_REPUB_MS      3000  /* re-publish our 'C' this often for a late-joining peer */
 
 static long now_ms(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return t.tv_sec*1000L + t.tv_nsec/1000000L; }
 static void sleep_ms(int ms){ struct timespec t={.tv_sec=ms/1000,.tv_nsec=(ms%1000)*1000000L}; nanosleep(&t,NULL); }
@@ -219,9 +221,22 @@ int main(int argc, char **argv){
     uint8_t tagged[601]; tagged[0]='C'; memcpy(tagged+1, sealed, slen);
     signaling_send(sig, tagged, slen+1);
 
-    uint8_t rblob[700]; size_t rlen=0;
-    do { if (signaling_recv(sig, rblob, sizeof rblob, &rlen)!=0){ fprintf(stderr,"no peer candidates\n"); return 1; } }
-    while (rlen<1 || rblob[0]!='C');
+    /* Wait for the peer's 'C'. This can be long -- the other side may not have run
+     * `join` yet -- so don't sit idle: idle CGNAT (mobile/tethering) reaps or
+     * rotates the punch socket's mapping within tens of seconds, which is exactly
+     * why a symmetric-NAT *create* side fails while a cone create side (stable
+     * mapping) succeeds. Keep the mapping warm with periodic STUN, and re-publish
+     * our candidates since ephemeral relays don't store the first send. */
+    uint8_t rblob[700]; size_t rlen=0; int got_c=0;
+    long warm_at  = now_ms() + PREPUNCH_WARM_MS;
+    long repub_at = now_ms() + PREPUNCH_REPUB_MS;
+    while (!got_c){
+        long now = now_ms();
+        if (now >= warm_at){ ep_t s; stun_query_on(fd,"stun.l.google.com","19302",&s); warm_at = now + PREPUNCH_WARM_MS; }
+        if (now >= repub_at){ signaling_send(sig, tagged, slen+1); repub_at = now + PREPUNCH_REPUB_MS; }
+        if (signaling_try_recv(sig, rblob, sizeof rblob, &rlen)!=0){ sleep_ms(50); continue; }
+        if (rlen>=1 && rblob[0]=='C') got_c=1;
+    }
     uint8_t rwire[512]; size_t rwlen=0;
     if (cand_open(sk, rblob+1, rlen-1, rwire, &rwlen)!=0){ fprintf(stderr,"candidate decrypt failed\n"); return 1; }
     candidate_t rem[MAX_CANDS]; int nr = cand_deserialize(rwire, rwlen, rem, MAX_CANDS);
@@ -262,10 +277,14 @@ int main(int argc, char **argv){
 
     int punched = 0;
     for (int attempt=1; attempt<=retries; attempt++){
-        if (attempt > 1){
-            fprintf(stderr,"[*] refreshing candidates (re-STUN + re-exchange) before retry...\n");
-            refresh_candidates(sig, sk, fd, dual, attempt, cands, nc, srflx_idx, srflx6_idx, &pc);
-        }
+        /* Re-STUN + barrier before EVERY attempt, including the first: on a
+         * symmetric/CGNAT create side that idled while waiting for the peer, the
+         * srflx measured before the exchange is already stale, and attempt 1 must
+         * not punch from it. refresh also re-aligns both windows. If the barrier
+         * times out, pc keeps the pre-loop candidates -- degrades to old behaviour. */
+        fprintf(stderr,"[*] refreshing candidates (re-STUN + re-exchange)%s...\n",
+                attempt==1 ? "" : " before retry");
+        refresh_candidates(sig, sk, fd, dual, attempt, cands, nc, srflx_idx, srflx6_idx, &pc);
         fprintf(stderr,"[*] punching (UDP hole punch, up to %ds, attempt %d/%d)...\n",
                 PUNCH_TIMEOUT_MS/1000, attempt, retries);
         if (punch_run(&pc, PUNCH_TIMEOUT_MS, &chosen) == 0){ punched = 1; break; }
@@ -330,11 +349,21 @@ int main(int argc, char **argv){
             else if (strncmp(line,"/file ",6)==0){
                 const char *path=line+6; FILE *f=fopen(path,"rb");
                 if (!f){ printf("cannot open %s\n> ",path); fflush(stdout); }
-                else { fseek(f,0,SEEK_END); long sz=ftell(f); fseek(f,0,SEEK_SET);
-                    uint8_t *buf=malloc(sz>0?sz:1);
-                    if (fread(buf,1,sz,f)==(size_t)sz){ app_send_file(app, basename2(path), buf, sz);
-                        printf("[send] %s (%ld bytes) queued\n> ", basename2(path), sz); }
-                    free(buf); fclose(f); fflush(stdout); }
+                else {
+                    long sz=-1;
+                    if (fseek(f,0,SEEK_END)==0){ sz=ftell(f); fseek(f,0,SEEK_SET); }
+                    if (sz<0) printf("cannot size %s (not a regular file?)\n> ", path);
+                    else if ((uint64_t)sz>APP_MAX_FILE) printf("file too large: %ld bytes (max %llu)\n> ", sz,(unsigned long long)APP_MAX_FILE);
+                    else {
+                        uint8_t *buf=malloc(sz>0?(size_t)sz:1);
+                        if (!buf) printf("out of memory reading %s\n> ", path);
+                        else if (fread(buf,1,sz,f)!=(size_t)sz) printf("read error on %s\n> ", path);
+                        else { app_send_file(app, basename2(path), buf, sz);
+                            printf("[send] %s (%ld bytes) queued\n> ", basename2(path), sz); }
+                        free(buf);
+                    }
+                    fclose(f); fflush(stdout);
+                }
             }
 #ifdef WITH_VOICE
             else if (strcmp(line,"/call")==0){

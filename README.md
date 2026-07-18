@@ -7,7 +7,6 @@ A single pairing code (CPace PAKE) derives every channel key.
 
 **Docs:** [SECURITY.md](SECURITY.md) · [NAT-TRAVERSAL.md](NAT-TRAVERSAL.md) 
 
-[![CI](https://github.com/gloomydog/telegloomy/actions/workflows/ci.yml/badge.svg)](https://github.com/gloomydog/telegloomy/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ## Layout
@@ -79,16 +78,17 @@ chosen to avoid the WireGuard-standard 51820, which VPN setups often claim). Bot
 different ports -- each just opens its own port on its own firewall.
 
 ## Run
-    ./telegloomy create <passphrase> [relay_host]     # peer A prints/uses the passphrase
-    ./telegloomy join   <passphrase> [relay_host]     # peer B uses the same passphrase
-Both peers fan out across several built-in public relays (relay.damus.io,
+    ./telegloomy create [relay_host]            # peer A: prints a strong pairing code
+    ./telegloomy join <code> [relay_host]       # peer B: use the code peer A printed
+`create` generates the pairing code itself (you don't supply one); `join` takes
+that code. Both peers fan out across several built-in public relays (relay.damus.io,
 relay.primal.net, relay.nostr.band, nos.lol) at once, so one relay being down
 doesn't block rendezvous; an optional `relay_host` is simply tried first. Then:
 type to chat, "/file <path>" to send, "/call" / "/hangup" for voice (voice
 build), "/quit".
 
 On connect it prints the NAT type and which relays it reached, then hole-punches.
-A punch often just misses on the first try, so it makes a few attempts (3 by
+A punch often just misses on the first try, so it makes a few attempts (5 by
 default; set `PUNCH_RETRIES` to change), re-running STUN and re-exchanging
 candidates between attempts so each try is as fresh as restarting the session by
 hand. If every attempt fails (e.g. symmetric x symmetric NAT) it falls back to
@@ -99,7 +99,7 @@ and voice is disabled on that path.
     SUBKEY_SIGNAL        seal candidate exchange over Nostr
     SUBKEY_PUNCH         authenticate hole-punch PING/PONG
     SUBKEY_REL_{A2B,B2A} reliable stream (chat/file)
-    SUBKEY_UNREL_{A2B,B2A} datagrams (voice), nonce = seq
+    SUBKEY_UNREL_{A2B,B2A} datagrams (voice; per-packet seq carried in payload)
 
 ## Roadmap
     m0 STUN                          done (v4 + real-v6 server-reflexive)

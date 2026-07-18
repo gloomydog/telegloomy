@@ -29,8 +29,15 @@ struct transport {
     struct rbuf reorder[TR_WIN];
     tr_recv_cb on_rel, on_unrel; void *user; void *user_unrel;
     tr_send_fn send_fn; void *send_user; int relayed;
-    pthread_mutex_t txlock;
+    pthread_mutex_t txlock;         /* guards only the tx nonce counter + socket write */
 };
+/* Threading: txlock covers just send_pkt's counter/socket, because that path is
+ * the only one shared across threads (voice thread sends unreliable while the
+ * main thread sends reliable). The reliable bookkeeping below -- out[], reorder[],
+ * next_rseq, rcv_next, and the replay window -- is touched solely from the main
+ * thread (transport_send_reliable, transport_poll, on_ack via handle_wire), so it
+ * needs no lock. If a future caller ever drives reliable I/O from another thread,
+ * that invariant breaks and these need their own mutex. */
 
 static long now_ms(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return t.tv_sec*1000L+t.tv_nsec/1000000L; }
 static void put32(uint8_t *p, uint32_t v){ p[0]=v>>24; p[1]=v>>16; p[2]=v>>8; p[3]=v; }

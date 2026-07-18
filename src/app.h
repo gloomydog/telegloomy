@@ -3,6 +3,11 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* Upper bound on a single transfer. Bounds both the local read in /file and the
+ * allocation a *peer* can request via a FILE_OFFER, so a malicious offer can't
+ * exhaust memory. */
+#define APP_MAX_FILE (2ULL * 1024 * 1024 * 1024)   /* 2 GiB */
+
 typedef struct app app_t;
 
 typedef void (*app_chat_cb)(void *user, const char *text, size_t len);

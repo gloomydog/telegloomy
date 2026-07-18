@@ -132,7 +132,7 @@ Inbound keepalives arrive on the same socket and are dropped by the transport
 One punch window is easy to miss: relay latency staggers when each side finishes
 the exchange and starts punching, or the very first PINGs hit a NAT mapping that
 hasn't warmed yet. So a failed attempt is not the end — telegloomy punches up to
-a few times (3 by default, override with `PUNCH_RETRIES`). Before each retry it
+a few times (5 by default, override with `PUNCH_RETRIES`). Before each retry it
 re-runs STUN and re-exchanges candidates over the relay, which does two things at
 once:
 
