@@ -119,6 +119,32 @@ that has not confirmed yet will confirm on the next keepalive PING it receives.
 Inbound keepalives arrive on the same socket and are dropped by the transport
 (they fail its AEAD), so they never reach the application.
 
+### 3.6b Retry with fresh candidates
+One punch window is easy to miss: relay latency staggers when each side finishes
+the exchange and starts punching, or the very first PINGs hit a NAT mapping that
+hasn't warmed yet. So a failed attempt is not the end — telegloomy punches up to
+a few times (3 by default, override with `PUNCH_RETRIES`). Before each retry it
+re-runs STUN and re-exchanges candidates over the relay, which does two things at
+once:
+
+- **Refreshes the reflexive port.** A fixed-port mapping can drift, or may only
+  just have opened, since the first STUN probe — so the port the peer was told to
+  aim at could already be wrong. Re-STUNning gets the current one.
+- **Re-aligns the two sides.** The re-exchange doubles as a barrier that both
+  peers pass through together, so their next punch windows overlap again instead
+  of drifting further apart.
+
+Each retry is therefore about as fresh as quitting and starting the whole session
+by hand — which is often exactly what makes a stubborn pair finally connect. The
+barrier uses a short timeout: if one side has already confirmed and moved on to
+the transfer, it is no longer answering, so the other simply times out after a
+few seconds and punches once more, confirming on the peer's keepalive PINGs. Each
+round's messages are tagged with the attempt number, so a leftover message from
+an earlier round is never mistaken for this round's answer; if the two sides ever
+drift onto different attempt numbers the tags just miss, the barrier times out,
+and each punches anyway — degrading to the old single-shot behaviour rather than
+deadlocking.
+
 ### 3.7 IPv6 / dual-stack
 The socket is `AF_INET6` with `IPV6_V6ONLY=0`, so it handles both IPv6 and
 IPv4 (the latter as `::ffff:a.b.c.d`). If a peer has a **global IPv6** address,
@@ -129,12 +155,13 @@ type, and `direct path established (IPv4|IPv6)` reports which family actually
 won.
 
 ### 3.8 Relay fallback
-If no candidate confirms within ~10 s (typically **symmetric × symmetric**, or a
-firewall blocking the UDP), telegloomy falls back to relaying the *already
+If no candidate confirms across every attempt (each punch window is ~10 s; see
+3.6b), telegloomy gives up on a direct path — typically **symmetric × symmetric**,
+or a firewall blocking the UDP — and falls back to relaying the *already
 encrypted* transport packets over Nostr (tagged, base64 inside events). Chat
-works; file transfer is slow; voice is disabled on this path. This is a
-graceful degradation, not a real TURN relay — a public data-relay server would
-be needed for low-latency relayed media.
+works; file transfer is slow; voice is disabled on this path. This is a graceful
+degradation, not a real TURN relay — a public data-relay server would be needed
+for low-latency relayed media.
 
 ---
 
@@ -142,10 +169,13 @@ be needed for low-latency relayed media.
 
 If *both* peers are behind symmetric NATs, neither can predict the port the
 other's NAT will assign for *this specific* flow, so the exchanged srflx
-candidates are already stale by the time the punch happens. Only one side being
-symmetric is fine (it punches toward the cone side's stable mapping). Fixes for
-the double-symmetric case are birthday-paradox port prediction (low success) or
-a relay (telegloomy uses the Nostr fallback).
+candidates are already stale by the time the punch happens. The re-STUN on each
+retry (3.6b) recovers a mapping that merely *drifted*, but it cannot help here:
+a symmetric NAT hands out a fresh, unpredictable port for the peer's flow no
+matter how recently we measured our own. Only one side being symmetric is fine
+(it punches toward the cone side's stable mapping). The real fixes for the
+double-symmetric case are birthday-paradox port prediction (low success) or a
+relay — telegloomy uses the Nostr fallback.
 
 ---
 
@@ -186,8 +216,12 @@ Override the port with `P2P_PORT=<port>` if 58712 is taken.
         │
     seal + exchange candidates over Nostr (PAKE key)
         │
-    simultaneous STUN-shaped, MAC-authenticated PING/PONG to all candidates
-        │   (confirm on the peer's ACTUAL source address, not the advertised one)
-        │
-        ├─ a path confirms ──▶ connect() ──▶ keepalive ──▶ direct encrypted transport
-        └─ 10s timeout      ──▶ relay-over-Nostr fallback (chat/file, no voice)
+    ┌─▶ simultaneous STUN-shaped, MAC-authenticated PING/PONG to all candidates
+    │       │   (confirm on the peer's ACTUAL source address, not the advertised one)
+    │       │
+    │       ├─ a path confirms ──▶ connect() ──▶ keepalive ──▶ direct encrypted transport
+    │       └─ ~10s window, no confirm
+    │             │
+    └── re-STUN + re-exchange candidates ◀── retry (up to PUNCH_RETRIES)
+                  │
+                  └─ all attempts fail ──▶ relay-over-Nostr fallback (chat/file, no voice)

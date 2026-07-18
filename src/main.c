@@ -18,9 +18,20 @@ static void *audio_thread(void *a){ audio_pw_run((voice_t*)a, 48000, 960); retur
 #include <string.h>
 #include <unistd.h>
 #include <poll.h>
+#include <time.h>
 #include <sodium.h>
 #include <signal.h>
 #include <arpa/inet.h>
+
+/* Punch attempts before falling back to relay, and the short barrier that
+ * re-aligns both sides before each retry. Mirrors cwormhole's tuning. */
+#define PUNCH_RETRIES          3     /* env: PUNCH_RETRIES */
+#define PUNCH_TIMEOUT_MS       10000 /* per-attempt hole-punch window */
+#define PUNCH_SYNC_TIMEOUT_MS  5000  /* short barrier for per-retry candidate re-exchange */
+#define REFRESH_RESEND_MS      1500  /* re-publish our round candidates this often */
+
+static long now_ms(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return t.tv_sec*1000L + t.tv_nsec/1000000L; }
+static void sleep_ms(int ms){ struct timespec t={.tv_sec=ms/1000,.tv_nsec=(ms%1000)*1000000L}; nanosleep(&t,NULL); }
 
 static volatile sig_atomic_t g_want_quit = 0;
 static void on_term(int sig){ (void)sig; g_want_quit = 1; }
@@ -59,6 +70,66 @@ static void on_file(void *u, uint32_t id, const char *name, uint64_t got, uint64
     FILE *f=fopen(out,"wb"); if (f){ fwrite(d,1,len,f); fclose(f); printf("\r[recv %s] saved -> %s (%llu bytes)\n> ", name,out,(unsigned long long)len);}
     else printf("\r[recv %s] could not write file\n> ", name);
     fflush(stdout);
+}
+
+/* Re-measure + re-swap candidates before a punch retry, so an in-session retry
+ * carries the same fresh state a hand restart would. Two things go stale between
+ * the one-time pre-loop exchange and a later attempt: (1) our server-reflexive
+ * port -- the NAT mapping can drift, or may only just have warmed, since the
+ * first STUN probe, so the port the peer was told to aim at is wrong; (2) window
+ * alignment -- relay jitter staggers when each side finishes the first exchange,
+ * and a plain retry loop preserves that skew. Re-running STUN fixes (1);
+ * re-exchanging over the relay doubles as a barrier that re-aligns both sides for
+ * (2). The barrier uses a SHORT timeout: if the peer already confirmed and moved
+ * on, it is no longer answering, so we must not block -- we time out in a few
+ * seconds and let the caller punch once more, which confirms on the peer's
+ * keepalive PINGs. Messages are round-tagged ('R'<attempt>) so a leftover from an
+ * earlier round (or the pre-loop 'C' exchange) is never mistaken for this round's
+ * answer; if the two sides drift onto different attempt numbers the tags simply
+ * miss, the barrier times out, and each punches anyway -- degrading to the old
+ * behaviour rather than deadlocking.
+ *
+ * Returns 0 and rebuilds pc->remote from the peer's fresh candidates on a
+ * successful swap; -1 (pc left unchanged) if the barrier timed out. */
+static int refresh_candidates(signaling_t *sig, const uint8_t sk[32], int fd, int dual,
+                              int attempt, candidate_t *cands, int nc, int srflx_idx,
+                              punch_ctx *pc){
+    if (srflx_idx >= 0){
+        ep_t srflx;
+        if (stun_query_on(fd, "stun.l.google.com", "19302", &srflx) == 0)
+            cands[srflx_idx].ep = srflx;   /* replace the possibly-stale mapping */
+    }
+
+    uint8_t wire[512]; int wlen = cand_serialize(cands, nc, wire, sizeof wire);
+    if (wlen < 0) return -1;
+    uint8_t sealed[600]; size_t slen = 0;
+    if (cand_seal(sk, wire, wlen, sealed, &slen) != 0) return -1;
+    uint8_t msg[602]; msg[0]='R'; msg[1]=(uint8_t)attempt; memcpy(msg+2, sealed, slen);
+    size_t msglen = slen + 2;
+
+    /* Publish our round candidates, then wait for the peer's matching round,
+     * re-publishing periodically (ephemeral relay events aren't stored, so a
+     * peer that reaches the barrier a beat later still needs to see ours). */
+    signaling_send(sig, msg, msglen);
+    long deadline = now_ms() + PUNCH_SYNC_TIMEOUT_MS;
+    long next_resend = now_ms() + REFRESH_RESEND_MS;
+    for (;;){
+        long now = now_ms();
+        if (now >= deadline) return -1;   /* peer not answering this round -- likely already up */
+        if (now >= next_resend){ signaling_send(sig, msg, msglen); next_resend = now + REFRESH_RESEND_MS; }
+
+        uint8_t rbuf[700]; size_t rlen = 0;
+        if (signaling_try_recv(sig, rbuf, sizeof rbuf, &rlen) != 0){ sleep_ms(50); continue; }
+        if (rlen < 2 || rbuf[0] != 'R' || rbuf[1] != (uint8_t)attempt) continue; /* stale / other round */
+
+        uint8_t rwire[512]; size_t rwlen = 0;
+        if (cand_open(sk, rbuf+2, rlen-2, rwire, &rwlen) != 0) continue;
+        candidate_t rem[MAX_CANDS]; int nr = cand_deserialize(rwire, rwlen, rem, MAX_CANDS);
+        if (nr <= 0) return -1;
+        pc->nremote = 0;
+        for (int i=0;i<nr;i++){ if(!dual && rem[i].ep.family==6) continue; pc->remote[pc->nremote++]=rem[i].ep; }
+        return pc->nremote > 0 ? 0 : -1;
+    }
 }
 
 int main(int argc, char **argv){
@@ -116,7 +187,8 @@ int main(int argc, char **argv){
     ep_t srflx; nat_type_t nat = nat_detect(fd, &srflx);
     fprintf(stderr,"[*] NAT type: %s\n",
             nat==NAT_CONE?"cone (punchable)":nat==NAT_SYMMETRIC?"symmetric (punch may fail)":"unknown");
-    if (nat != NAT_UNKNOWN && nc < MAX_CANDS){ cands[nc].type=CAND_SRFLX; cands[nc].ep=srflx; nc++; }
+    int srflx_idx = -1;
+    if (nat != NAT_UNKNOWN && nc < MAX_CANDS){ srflx_idx = nc; cands[nc].type=CAND_SRFLX; cands[nc].ep=srflx; nc++; }
     for (int i=0;i<nc;i++){
         char ipbuf[INET6_ADDRSTRLEN]; inet_ntop(cands[i].ep.family==6?AF_INET6:AF_INET, cands[i].ep.addr, ipbuf, sizeof ipbuf);
         fprintf(stderr,"[*] our candidate: %s %s:%u\n", cands[i].type==CAND_SRFLX?"srflx":"host ", ipbuf, cands[i].ep.port);
@@ -140,7 +212,8 @@ int main(int argc, char **argv){
         char ipbuf[INET6_ADDRSTRLEN]; inet_ntop(rem[i].ep.family==6?AF_INET6:AF_INET, rem[i].ep.addr, ipbuf, sizeof ipbuf);
         fprintf(stderr,"[*] peer candidate: %s %s:%u\n", rem[i].type==CAND_SRFLX?"srflx":"host ", ipbuf, rem[i].ep.port);
     }
-    sodium_memzero(sk, sizeof sk);
+    /* sk (SUBKEY_SIGNAL) stays live: the retry loop re-seals refreshed
+     * candidates with it. Zeroed once punching is done, below. */
     fprintf(stderr,"[*] got %d peer candidate(s); punching...\n", nr);
 
     punch_ctx pc; memset(&pc,0,sizeof pc); pc.fd=fd;
@@ -154,7 +227,36 @@ int main(int argc, char **argv){
     transport_t *t = transport_new(fd, is_init?0:1, K, NULL, NULL, NULL);
     sodium_memzero(K, sizeof K);
 
-    if (punch_run(&pc, 10000, &chosen)==0){
+    /* Try punching several times before giving up on a direct path. A single
+     * failed attempt is often just a near-miss: the two peers' punch windows only
+     * briefly overlapped (relay latency staggers when each side finishes the
+     * candidate exchange and starts punching), or the first PINGs hit a still-cold
+     * NAT mapping. Re-running punch_run back-to-back widens the combined overlap
+     * and lets the already-warmed mapping carry the next attempt -- the same
+     * reason ending the session and starting over by hand sometimes connects. Each
+     * retry first refreshes candidates (re-STUN + re-exchange), which also acts as
+     * a shared barrier so both sides' punch windows stay aligned; if one side
+     * confirms first, its keepalive PINGs nudge the peer, whose own punch_run
+     * confirms on any authenticated PING. */
+    int retries = PUNCH_RETRIES;
+    const char *re = getenv("PUNCH_RETRIES");
+    if (re && *re){ long v=strtol(re,NULL,10); if(v>=1 && v<=100) retries=(int)v; }
+
+    int punched = 0;
+    for (int attempt=1; attempt<=retries; attempt++){
+        if (attempt > 1){
+            fprintf(stderr,"[*] refreshing candidates (re-STUN + re-exchange) before retry...\n");
+            refresh_candidates(sig, sk, fd, dual, attempt, cands, nc, srflx_idx, &pc);
+        }
+        fprintf(stderr,"[*] punching (UDP hole punch, up to %ds, attempt %d/%d)...\n",
+                PUNCH_TIMEOUT_MS/1000, attempt, retries);
+        if (punch_run(&pc, PUNCH_TIMEOUT_MS, &chosen) == 0){ punched = 1; break; }
+        if (attempt < retries)
+            fprintf(stderr,"[!] punch attempt %d/%d failed -- retrying...\n", attempt, retries);
+    }
+    sodium_memzero(sk, sizeof sk);
+
+    if (punched){
         char ipbuf[INET6_ADDRSTRLEN];
         inet_ntop(chosen.family==6?AF_INET6:AF_INET, chosen.addr, ipbuf, sizeof ipbuf);
         fprintf(stderr,"[+] direct path established (%s) -> %s:%u\n",
@@ -162,7 +264,7 @@ int main(int argc, char **argv){
         punch_start_keepalive(fd, pc.key, 15000);   /* hold the NAT mapping / conntrack open */
         signaling_close(sig); sig=NULL;
     } else {
-        fprintf(stderr,"[!] hole punch failed -- relaying over Nostr (chat ok; file slow; voice off)\n");
+        fprintf(stderr,"[!] hole punch failed after %d attempts -- relaying over Nostr (chat ok; file slow; voice off)\n", retries);
         relay_mode = 1;
         transport_set_relay(t, relay_send, sig);   /* keep sig open as the datapath */
     }

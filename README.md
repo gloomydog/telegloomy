@@ -25,7 +25,7 @@ A single pairing code (CPace PAKE) derives every channel key.
     third_party/pakechat/    vendored CPace / Nostr / WebSocket (from pakechat_cli)
                              (ws_client.c: local patch adds connect + handshake timeouts)
     src/main.c          end-to-end telegloomy binary
-    tests/              test_candidate, test_punch, test_transport, test_app
+    tests/              test_candidate, test_punch, test_transport, test_app, test_voice
 
 ## Install dependencies
  
@@ -81,12 +81,19 @@ different ports -- each just opens its own port on its own firewall.
 ## Run
     ./telegloomy create <passphrase> [relay_host]     # peer A prints/uses the passphrase
     ./telegloomy join   <passphrase> [relay_host]     # peer B uses the same passphrase
-Default relay: nos.lol. Then: type to chat, "/file <path>" to send, "/call"/"/hangup" for voice (voice build), "/quit".
+Both peers fan out across several built-in public relays (relay.damus.io,
+relay.primal.net, relay.nostr.band, nos.lol) at once, so one relay being down
+doesn't block rendezvous; an optional `relay_host` is simply tried first. Then:
+type to chat, "/file <path>" to send, "/call" / "/hangup" for voice (voice
+build), "/quit".
 
-On connect it prints the NAT type and which relays it reached. If hole
-punching fails (e.g. symmetric x symmetric NAT) it automatically falls back to
-relaying the encrypted stream over Nostr -- chat works, file is slow, voice is
-disabled on that path.
+On connect it prints the NAT type and which relays it reached, then hole-punches.
+A punch often just misses on the first try, so it makes a few attempts (3 by
+default; set `PUNCH_RETRIES` to change), re-running STUN and re-exchanging
+candidates between attempts so each try is as fresh as restarting the session by
+hand. If every attempt fails (e.g. symmetric x symmetric NAT) it falls back to
+relaying the encrypted stream over Nostr -- chat works, file transfer is slow,
+and voice is disabled on that path.
 
 ## Key schedule (from PAKE master K = cpace.session_key, 32 bytes)
     SUBKEY_SIGNAL        seal candidate exchange over Nostr
@@ -123,9 +130,9 @@ direction). The AEAD nonce is a per-direction 64-bit counter and each direction
 has its own key, so nonces never repeat (the send counter is mutex-guarded so
 the voice thread and main thread can't collide). Replay is blocked by a 64-packet
 sliding window. Candidate exchange is sealed with XChaCha20-Poly1305; hole-punch
-PING/PONG is authenticated with keyed BLAKE2b (crypto_auth). Nostr identities are
-ephemeral per session; CPace gives mutual authentication (a peer without the code
-fails the confirmation MAC) and forward secrecy.
+PING/PONG is authenticated with crypto_auth (HMAC-SHA-512-256). Nostr identities
+are ephemeral per session; CPace gives mutual authentication (a peer without the
+code fails the confirmation MAC) and forward secrecy.
 
 Passphrase hardening:
 - `create` GENERATES a strong 12-char pairing code (~70 bits, ambiguous glyphs

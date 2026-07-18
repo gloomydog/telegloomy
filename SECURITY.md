@@ -116,7 +116,9 @@ voice datagrams are fire-and-forget with per-frame Opus and a jitter buffer.
 
 - **Candidates** (your host and STUN-reflexive IP:port) are serialized and
   sealed with `SUBKEY_SIGNAL` (XChaCha20-Poly1305, random 24-byte nonce) before
-  being sent through the relay. A relay sees only ciphertext.
+  being sent through the relay. A relay sees only ciphertext. If the first punch
+  misses, the refreshed candidates for each retry are re-sealed and re-exchanged
+  the same way, so the relay never sees a plaintext address on any attempt.
 - **Hole-punch** PING/PONG packets carry a random challenge and a `crypto_auth`
   tag keyed by `SUBKEY_PUNCH`. Unauthenticated packets (scanners, spoofers) fail
   verification and are dropped without a reply, so a stray packet cannot forge a
