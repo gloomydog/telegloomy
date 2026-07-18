@@ -60,7 +60,16 @@ the wrong mapping.
   if present), each with the bound port.
 - **Server-reflexive (srflx) candidate**: send a STUN Binding Request to a
   public STUN server; the reply's `XOR-MAPPED-ADDRESS` is your public `ip:port`
-  as seen from outside — i.e. the mapping your NAT created for this socket.
+  as seen from outside — i.e. the mapping your NAT created for this socket. Two
+  srflx candidates are gathered where possible:
+  - **IPv4 srflx** — the STUN request goes to the server over IPv4 (reached as a
+    v4-mapped address on the dual-stack socket), learning the public IPv4
+    `ip:port`.
+  - **IPv6 srflx** — a second STUN request goes to the server over *real* IPv6,
+    learning the exact global v6 `ip:port` the kernel sources from toward the
+    internet. This is only attempted on a dual-stack socket, and quietly skipped
+    if the host has no IPv6 path or the STUN server has no AAAA record. See §3.7
+    for why the v6 srflx matters even though IPv6 has no NAT.
 
 ### 3.4 NAT type detection
 Two STUN probes to *different* servers from the same socket. If both report the
@@ -129,7 +138,8 @@ once:
 
 - **Refreshes the reflexive port.** A fixed-port mapping can drift, or may only
   just have opened, since the first STUN probe — so the port the peer was told to
-  aim at could already be wrong. Re-STUNning gets the current one.
+  aim at could already be wrong. Re-STUNning (both the IPv4 and, where present,
+  the IPv6 srflx) gets the current one.
 - **Re-aligns the two sides.** The re-exchange doubles as a barrier that both
   peers pass through together, so their next punch windows overlap again instead
   of drifting further apart.
@@ -148,11 +158,32 @@ deadlocking.
 ### 3.7 IPv6 / dual-stack
 The socket is `AF_INET6` with `IPV6_V6ONLY=0`, so it handles both IPv6 and
 IPv4 (the latter as `::ffff:a.b.c.d`). If a peer has a **global IPv6** address,
-there is no NAT to traverse: the IPv6 host candidate is reached directly, STUN
-and NAT concerns simply don't apply, and that path usually wins. Falls back to
-IPv4-only if the host has IPv6 disabled. The startup line reports the socket
-type, and `direct path established (IPv4|IPv6)` reports which family actually
-won.
+there is (usually) no NAT to traverse — but that does *not* mean an IPv6 path
+just works, and the naive "advertise every host address" approach quietly fails
+in the common case:
+
+- A modern host has **many** global IPv6 addresses on one interface — a stable
+  SLAAC address plus a rotating set of RFC 4941 *privacy* addresses. The kernel
+  picks the source address for an outbound flow by its own rules, and it is
+  usually a *privacy* address, not the one you'd guess.
+- If each side just advertises its host v6 addresses, the peer ends up aiming
+  PINGs at an address the other side never actually **sends from**. A stateful
+  host firewall (see §5) then drops every inbound PING, because it belongs to no
+  flow this host originated — so the punch fails even though both peers have
+  perfectly good IPv6 connectivity.
+
+The fix is the **IPv6 server-reflexive candidate** (§3.3): a STUN Binding
+Request over real IPv6 tells us the *exact* global v6 `ip:port` the kernel
+sources from toward the public internet. Advertising that — and, because it's the
+socket's own mapping, sending punch PINGs from it — makes both peers open their
+firewall pinhole for, and target, the *same* address. The v6 punch then lines up
+and confirms, typically almost instantly (no NAT round trip). Without the v6
+srflx, IPv6 only worked reliably on the same LAN or between hosts with a single,
+predictable global address.
+
+Falls back to IPv4-only if the host has IPv6 disabled (the v6 srflx probe is
+skipped). The startup line reports the socket type, and `direct path established
+(IPv4|IPv6)` reports which family actually won.
 
 ### 3.8 Relay fallback
 If no candidate confirms across every attempt (each punch window is ~10 s; see
@@ -211,8 +242,9 @@ Override the port with `P2P_PORT=<port>` if 58712 is taken.
 
     bind fixed-port dual-stack socket
         │
-        ├─ gather host candidates
-        ├─ STUN  ──▶ srflx candidate + NAT type
+        ├─ gather host candidates (IPv4 + global IPv6)
+        ├─ STUN over IPv4 ──▶ IPv4 srflx candidate + NAT type
+        ├─ STUN over IPv6 ──▶ IPv6 srflx candidate (dual-stack only; skipped if no v6)
         │
     seal + exchange candidates over Nostr (PAKE key)
         │

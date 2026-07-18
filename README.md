@@ -13,7 +13,7 @@ A single pairing code (CPace PAKE) derives every channel key.
 ## Layout
     src/common.h        ep_t, candidate_t
     src/keys.{h,c}      K -> per-direction subkeys (crypto_kdf)
-    src/stun.{h,c}      STUN binding (RFC 5389); stun_query_on(fd); nat_detect (cone/symmetric)
+    src/stun.{h,c}      STUN binding (RFC 5389); stun_query_on/stun_query6_on(fd) (v4 + v6 srflx); nat_detect (cone/symmetric)
     src/net.{h,c}       ep <-> sockaddr (v4-mapped aware), udp_bind / udp_bind_any / udp_bind_dual
     src/candidate.{h,c} gather host+srflx candidates, wire format, AEAD seal/open
     src/punch.{h,c}     authenticated UDP hole punch (PING/PONG + crypto_auth)
@@ -102,7 +102,7 @@ and voice is disabled on that path.
     SUBKEY_UNREL_{A2B,B2A} datagrams (voice), nonce = seq
 
 ## Roadmap
-    m0 STUN                          done
+    m0 STUN                          done (v4 + real-v6 server-reflexive)
     m1 NAT type detection            done (2 STUN probes, cone vs symmetric)
     m2 signaling (rendezvous+CPace)  done (wired onto pakechat_cli)
     m3 UDP hole punch                done
@@ -159,10 +159,14 @@ Honest limitations:
   failing outright, but this is not a real TURN relay: it is high-latency and
   rate-limited, fine for chat, slow for files, unusable for voice. A proper
   TURN/data-relay server would be the real fix.
-- IPv6 is supported via a dual-stack socket (IPv6 + IPv4-mapped); IPv6 host
-  candidates are punched directly (no STUN/NAT needed). Falls back to IPv4-only
-  if the host has IPv6 disabled. The dual-stack socket path is logic-tested but
-  not run-tested in the (IPv6-disabled) build sandbox.
+- IPv6 is supported via a dual-stack socket (IPv6 + IPv4-mapped). Both an IPv4
+  server-reflexive candidate (STUN over v4) and an IPv6 one (STUN over real v6)
+  are gathered: the v6 srflx is the exact global address the kernel sources from,
+  so both peers punch toward/from the *same* v6 address instead of a random
+  SLAAC/privacy address the firewall would drop. Local host candidates are also
+  raced (same-LAN wins instantly). Falls back to IPv4-only if the host has IPv6
+  disabled (v6 srflx probe skipped). The dual-stack + v6-srflx path is
+  logic-tested but not run-tested in the (IPv6-disabled) build sandbox.
 - voice codec/jitter/PLC is unit-tested; the PipeWire I/O path compiles but is
   not run-tested here (no audio device in the build sandbox).
 - handshake resend is best-effort (a few CONFIRM repeats); a real ack would be

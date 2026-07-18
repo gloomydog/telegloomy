@@ -93,11 +93,16 @@ static void on_file(void *u, uint32_t id, const char *name, uint64_t got, uint64
  * successful swap; -1 (pc left unchanged) if the barrier timed out. */
 static int refresh_candidates(signaling_t *sig, const uint8_t sk[32], int fd, int dual,
                               int attempt, candidate_t *cands, int nc, int srflx_idx,
-                              punch_ctx *pc){
+                              int srflx6_idx, punch_ctx *pc){
     if (srflx_idx >= 0){
         ep_t srflx;
         if (stun_query_on(fd, "stun.l.google.com", "19302", &srflx) == 0)
             cands[srflx_idx].ep = srflx;   /* replace the possibly-stale mapping */
+    }
+    if (srflx6_idx >= 0){
+        ep_t srflx6;
+        if (stun_query6_on(fd, "stun.l.google.com", "19302", &srflx6) == 0)
+            cands[srflx6_idx].ep = srflx6;
     }
 
     uint8_t wire[512]; int wlen = cand_serialize(cands, nc, wire, sizeof wire);
@@ -189,6 +194,19 @@ int main(int argc, char **argv){
             nat==NAT_CONE?"cone (punchable)":nat==NAT_SYMMETRIC?"symmetric (punch may fail)":"unknown");
     int srflx_idx = -1;
     if (nat != NAT_UNKNOWN && nc < MAX_CANDS){ srflx_idx = nc; cands[nc].type=CAND_SRFLX; cands[nc].ep=srflx; nc++; }
+
+    /* IPv6 server-reflexive: the exact global v6 address the kernel sources from
+     * toward the internet. Advertising it (and sending from it) aligns the
+     * pinholes both peers open -- without it, a host's many SLAAC/privacy v6
+     * addresses leave each side targeting an address the other never sent from,
+     * and every punch is firewall-dropped. Only meaningful on a dual-stack sock. */
+    int srflx6_idx = -1;
+    if (dual && nc < MAX_CANDS){
+        ep_t srflx6;
+        if (stun_query6_on(fd, "stun.l.google.com", "19302", &srflx6) == 0){
+            srflx6_idx = nc; cands[nc].type=CAND_SRFLX; cands[nc].ep=srflx6; nc++;
+        }
+    }
     for (int i=0;i<nc;i++){
         char ipbuf[INET6_ADDRSTRLEN]; inet_ntop(cands[i].ep.family==6?AF_INET6:AF_INET, cands[i].ep.addr, ipbuf, sizeof ipbuf);
         fprintf(stderr,"[*] our candidate: %s %s:%u\n", cands[i].type==CAND_SRFLX?"srflx":"host ", ipbuf, cands[i].ep.port);
@@ -246,7 +264,7 @@ int main(int argc, char **argv){
     for (int attempt=1; attempt<=retries; attempt++){
         if (attempt > 1){
             fprintf(stderr,"[*] refreshing candidates (re-STUN + re-exchange) before retry...\n");
-            refresh_candidates(sig, sk, fd, dual, attempt, cands, nc, srflx_idx, &pc);
+            refresh_candidates(sig, sk, fd, dual, attempt, cands, nc, srflx_idx, srflx6_idx, &pc);
         }
         fprintf(stderr,"[*] punching (UDP hole punch, up to %ds, attempt %d/%d)...\n",
                 PUNCH_TIMEOUT_MS/1000, attempt, retries);
