@@ -2,6 +2,7 @@
 
 Serverless, End-to-End encrypted Peer-to-Peer **chat / file transfer / voice** over
 NAT working on CLI.
+
 A public Nostr relay is used only to introduce two peers. Once a direct
 path is punched through, all real traffic flows peer-to-peer and encrypted.
 A single pairing code (CPace PAKE) derives every channel key.
@@ -62,7 +63,7 @@ for the voice build).
     make clean           # remove binaries and objects
 
 `telegloomy-voice` is a separate binary built from the same sources with
-`-DWITH_VOICE`; it does everything `telegloomy` does, plus `/call`.
+`-DWITH_VOICE`is. It does everything `telegloomy` does, plus `/call`.
 
 ## Firewall
 telegloomy binds a FIXED UDP port (default 58712, same for both create and join).
@@ -93,15 +94,15 @@ at the cost of losing the re-roll.
 ## Run
     ./telegloomy create [relay_host]            # peer A: prints a strong pairing code
     ./telegloomy join <code> [relay_host]       # peer B: use the code peer A printed
--`create` generates the pairing code itself (you don't supply one)
--`join` takes that code. Both peers fan out across several built-in public relays (relay.damus.io,
+- `create` generates the pairing code itself (you don't supply one)
+- `join` takes that code. Both peers fan out across several built-in public relays (relay.damus.io,
 relay.primal.net, relay.nostr.band, nos.lol) at once, so one relay being down
 doesn't block rendezvous.
--an optional `relay_host` is simply tried first. 
--type to chat
--"/file <path>" to send
--"/call" / "/hangup" for voice (voice build) 
--"/quit" for stopping a sesssion.
+- an optional `relay_host` is simply tried first. 
+- type to chat
+- "/file <path>" to send
+- "/call" / "/hangup" for voice (voice build) 
+- "/quit" for stopping a sesssion.
 
 Received files are written to the **current working directory** as
 `received_<name>`, after the BLAKE2b hash is verified ( a file that fails the
@@ -119,8 +120,8 @@ works, file transfer is slow, and voice is disabled on that path.
 
 ## What connects with what
 Two things decide whether you get a direct path. 
--the peers must share an **address family**
--**NAT types** must allow a punch.
+- the peers must share an **address family**
+- **NAT types** must allow a punch.
 
 First, address family. Candidates from both families are raced, so a peer only
 needs *one* family in common with the other side:
