@@ -98,12 +98,12 @@ static int refresh_candidates(signaling_t *sig, const uint8_t sk[32], int fd, in
                               int srflx6_idx, punch_ctx *pc){
     if (srflx_idx >= 0){
         ep_t srflx;
-        if (stun_query_on(fd, "stun.l.google.com", "19302", &srflx) == 0)
+        if (stun_srflx(fd, &srflx) == 0)
             cands[srflx_idx].ep = srflx;   /* replace the possibly-stale mapping */
     }
     if (srflx6_idx >= 0){
         ep_t srflx6;
-        if (stun_query6_on(fd, "stun.l.google.com", "19302", &srflx6) == 0)
+        if (stun_srflx6(fd, &srflx6) == 0)
             cands[srflx6_idx].ep = srflx6;
     }
 
@@ -137,6 +137,50 @@ static int refresh_candidates(signaling_t *sig, const uint8_t sk[32], int fd, in
         for (int i=0;i<nr;i++){ if(!dual && rem[i].ep.family==6) continue; pc->remote[pc->nremote++]=rem[i].ep; }
         return pc->nremote > 0 ? 0 : -1;
     }
+}
+
+/* In-session equivalent of a hand restart. On carrier-CGNAT / commercial-VPN
+ * paths the external port a socket is granted is endpoint-dependent luck that
+ * the re-STUN retries cannot change -- they reuse the same socket, so a run that
+ * drew an unpunchable mapping stays unpunchable for all its attempts. That is
+ * exactly why quitting and starting the process over by hand connects when a
+ * same-socket retry loop won't: a fresh socket draws a fresh external mapping the
+ * peer has never seen. Rebinding here re-rolls that luck without a human in the
+ * loop. Only invoked once the fixed port has already failed, so the fixed port's
+ * "one firewall rule" benefit still covers easy NATs that punch on attempt 1.
+ *
+ * A fresh ephemeral port (bind port 0) is deliberate: reusing 58712 could hand
+ * back the same CGNAT/VPN mapping and defeat the point. Returns the new fd (>=0),
+ * having closed old_fd and rebuilt the candidate array and srflx indices for the
+ * new port; -1 on bind failure (old_fd left open, caller keeps using it). */
+static int rebind_socket(int old_fd, int *dual, ep_t *local, candidate_t *cands,
+                         int *nc, int *srflx_idx, int *srflx6_idx){
+    ep_t nl; int nd = 1;
+    int nfd = udp_bind_dual(0, &nl);                 /* port 0 => fresh ephemeral port */
+    if (nfd < 0){ nd = 0; nfd = udp_bind_any(4, 0, &nl); }
+    if (nfd < 0) return -1;
+
+    /* Rebuild the whole candidate set on the new port: host ports change with the
+     * bind, and srflx must be re-measured through the new mapping. */
+    int n = cand_collect_host(cands, MAX_CANDS);
+    for (int i=0;i<n;i++) cands[i].ep.port = nl.port;
+    int si = -1, s6 = -1;
+    ep_t srflx;
+    /* Same reasoning as the initial gather: keep the mapping even if the NAT
+     * type can't be classified on this socket. */
+    if (stun_srflx(nfd, &srflx) == 0 && n < MAX_CANDS){
+        si = n; cands[n].type = CAND_SRFLX; cands[n].ep = srflx; n++;
+    }
+    if (nd && n < MAX_CANDS){
+        ep_t srflx6;
+        if (stun_srflx6(nfd, &srflx6) == 0){
+            s6 = n; cands[n].type = CAND_SRFLX; cands[n].ep = srflx6; n++;
+        }
+    }
+
+    close(old_fd);
+    *dual = nd; *local = nl; *nc = n; *srflx_idx = si; *srflx6_idx = s6;
+    return nfd;
 }
 
 int main(int argc, char **argv){
@@ -189,13 +233,26 @@ int main(int argc, char **argv){
     fprintf(stderr,"[*] socket: %s, UDP port %u -- open this port (in) on your firewall\n",
             dual?"dual-stack (IPv6-capable, IPv4 fallback)":"IPv4-only", port);
 
+    fprintf(stderr,"[*] STUN servers (in order):");
+    for (int i=0;i<stun_server_count();i++)
+        fprintf(stderr," %s:%s", stun_server_host(i), stun_server_port(i));
+    fprintf(stderr,"%s\n", getenv("STUN_SERVERS") ? "  (from STUN_SERVERS)" : "");
+
     candidate_t cands[MAX_CANDS]; int nc = cand_collect_host(cands, MAX_CANDS);
     for (int i=0;i<nc;i++) cands[i].ep.port = local.port;
     ep_t srflx; nat_type_t nat = nat_detect(fd, &srflx);
     fprintf(stderr,"[*] NAT type: %s\n",
-            nat==NAT_CONE?"cone (punchable)":nat==NAT_SYMMETRIC?"symmetric (punch may fail)":"unknown");
+            nat==NAT_CONE?"cone (punchable)":nat==NAT_SYMMETRIC?"symmetric (punch may fail)":
+            "unknown (needs two reachable STUN servers to classify)");
+    /* The NAT *type* is diagnostic; the srflx *mapping* is what punching needs,
+     * so gather the candidate even when classification failed -- which happens
+     * whenever fewer than two servers answered (e.g. a one-entry STUN_SERVERS).
+     * Dropping the candidate there would quietly cripple traversal. nat_detect
+     * already filled srflx if any server answered, so the extra lookup only runs
+     * when it got nothing at all. */
     int srflx_idx = -1;
-    if (nat != NAT_UNKNOWN && nc < MAX_CANDS){ srflx_idx = nc; cands[nc].type=CAND_SRFLX; cands[nc].ep=srflx; nc++; }
+    int have_srflx = (nat != NAT_UNKNOWN) || stun_srflx(fd, &srflx) == 0;
+    if (have_srflx && nc < MAX_CANDS){ srflx_idx = nc; cands[nc].type=CAND_SRFLX; cands[nc].ep=srflx; nc++; }
 
     /* IPv6 server-reflexive: the exact global v6 address the kernel sources from
      * toward the internet. Advertising it (and sending from it) aligns the
@@ -205,7 +262,7 @@ int main(int argc, char **argv){
     int srflx6_idx = -1;
     if (dual && nc < MAX_CANDS){
         ep_t srflx6;
-        if (stun_query6_on(fd, "stun.l.google.com", "19302", &srflx6) == 0){
+        if (stun_srflx6(fd, &srflx6) == 0){
             srflx6_idx = nc; cands[nc].type=CAND_SRFLX; cands[nc].ep=srflx6; nc++;
         }
     }
@@ -232,7 +289,7 @@ int main(int argc, char **argv){
     long repub_at = now_ms() + PREPUNCH_REPUB_MS;
     while (!got_c){
         long now = now_ms();
-        if (now >= warm_at){ ep_t s; stun_query_on(fd,"stun.l.google.com","19302",&s); warm_at = now + PREPUNCH_WARM_MS; }
+        if (now >= warm_at){ ep_t s; stun_srflx(fd,&s); warm_at = now + PREPUNCH_WARM_MS; }
         if (now >= repub_at){ signaling_send(sig, tagged, slen+1); repub_at = now + PREPUNCH_REPUB_MS; }
         if (signaling_try_recv(sig, rblob, sizeof rblob, &rlen)!=0){ sleep_ms(50); continue; }
         if (rlen>=1 && rblob[0]=='C') got_c=1;
@@ -257,8 +314,6 @@ int main(int argc, char **argv){
     ep_t chosen;
     int relay_mode = 0;
     struct ui ui = {0};
-    transport_t *t = transport_new(fd, is_init?0:1, K, NULL, NULL, NULL);
-    sodium_memzero(K, sizeof K);
 
     /* Try punching several times before giving up on a direct path. A single
      * failed attempt is often just a near-miss: the two peers' punch windows only
@@ -275,8 +330,22 @@ int main(int argc, char **argv){
     const char *re = getenv("PUNCH_RETRIES");
     if (re && *re){ long v=strtol(re,NULL,10); if(v>=1 && v<=100) retries=(int)v; }
 
+    /* From attempt 2 on, rebind to a fresh local port before punching, so a run
+     * that drew an unpunchable NAT mapping re-rolls it the way a hand restart
+     * does (see rebind_socket). Disable with PUNCH_REBIND=0. */
+    int do_rebind = 1;
+    const char *rbe = getenv("PUNCH_REBIND");
+    if (rbe && *rbe && strtol(rbe,NULL,10)==0) do_rebind = 0;
+
     int punched = 0;
     for (int attempt=1; attempt<=retries; attempt++){
+        if (do_rebind && attempt > 1){
+            int nfd = rebind_socket(fd, &dual, &local, cands, &nc, &srflx_idx, &srflx6_idx);
+            if (nfd >= 0){
+                fd = nfd; pc.fd = nfd;
+                fprintf(stderr,"[*] rebound to fresh local UDP port %u (re-rolling NAT mapping)\n", local.port);
+            }
+        }
         /* Re-STUN + barrier before EVERY attempt, including the first: on a
          * symmetric/CGNAT create side that idled while waiting for the peer, the
          * srflx measured before the exchange is already stale, and attempt 1 must
@@ -292,6 +361,11 @@ int main(int argc, char **argv){
             fprintf(stderr,"[!] punch attempt %d/%d failed -- retrying...\n", attempt, retries);
     }
     sodium_memzero(sk, sizeof sk);
+
+    /* Built here, not before the loop: a rebind may have replaced fd, and the
+     * transport must own the final socket that punch_run connect()ed. */
+    transport_t *t = transport_new(fd, is_init?0:1, K, NULL, NULL, NULL);
+    sodium_memzero(K, sizeof K);
 
     if (punched){
         char ipbuf[INET6_ADDRSTRLEN];

@@ -19,8 +19,9 @@ OPUS_LIBS   := $(shell pkg-config --libs opus 2>/dev/null)
 PW_CFLAGS   := $(shell pkg-config --cflags libpipewire-0.3 2>/dev/null)
 PW_LIBS     := $(shell pkg-config --libs libpipewire-0.3 2>/dev/null)
 
-# Default: unit tests + the chat/file binary (no audio device needed).
-all: $(TESTBIN) telegloomy
+# Default: just the chat/file binary (no audio device needed).
+# Unit tests are built on demand via `make test`.
+all: telegloomy
 
 # --- unit tests (libsodium only) ------------------------------------------
 test_candidate: tests/test_candidate.c $(OBJ)
@@ -46,18 +47,20 @@ test: $(TESTBIN)
 telegloomy: src/main.c src/signaling.c $(CORE) $(POBJ)
 	$(CC) $(CFLAGS) -Isrc -I$(PAKE_DIR) -o $@ $^ $(LDLIBS) $(PAKE_LIBS)
 
+# Separate binary, so `make` after `make telegloomy-voice` doesn't leave the
+# voice build sitting where the plain one is expected.
 telegloomy-voice: src/main.c src/signaling.c src/voice.c src/audio_pipewire.c $(CORE) $(POBJ)
 	$(CC) $(CFLAGS) -DWITH_VOICE -Isrc -I$(PAKE_DIR) $(OPUS_CFLAGS) $(PW_CFLAGS) \
-	   -o telegloomy $^ $(LDLIBS) $(PAKE_LIBS) $(OPUS_LIBS) $(PW_LIBS) -lm
+	   -o $@ $^ $(LDLIBS) $(PAKE_LIBS) $(OPUS_LIBS) $(PW_LIBS) -lm
 
 %.o: %.c
 	$(CC) $(CFLAGS) -Isrc -c -o $@ $<
 
 clean:
-	rm -f $(OBJ) $(TESTBIN) telegloomy
+	rm -f $(OBJ) $(TESTBIN) telegloomy telegloomy-voice fuzz/fuzzer
 	rm -rf .pobj
 
-.PHONY: all test clean telegloomy telegloomy-voice fuzz asan tsan
+.PHONY: all test clean fuzz asan tsan
 # ---- security tooling ---------------------------------------------------
 SAN_CORE  := src/keys.c src/stun.c src/candidate.c src/net.c src/punch.c src/transport.c
 PAKE_CSRC := $(addprefix $(PAKE_DIR)/,$(addsuffix .c,$(PAKE_MODS)))

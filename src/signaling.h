@@ -17,5 +17,4 @@ int  signaling_send(signaling_t *s, const uint8_t *blob, size_t len);           
 int  signaling_recv(signaling_t *s, uint8_t *buf, size_t cap, size_t *len);      /* blocking */
 int  signaling_try_recv(signaling_t *s, uint8_t *buf, size_t cap, size_t *len);  /* nonblocking: -1 if none */
 
-int  signaling_relay_count(signaling_t *s);
 void signaling_close(signaling_t *s);

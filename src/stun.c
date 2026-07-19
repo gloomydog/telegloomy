@@ -122,20 +122,87 @@ int stun_query6_on(int fd, const char *host, const char *port, ep_t *out) {
     return stun_query_af(fd, AF_INET6, host, port, out);
 }
 
-int stun_query(const char *host, const char *port, ep_t *out) {
-    int fd=socket(AF_INET,SOCK_DGRAM,0); if (fd<0) return -1;
-    int rc=stun_query_on(fd,host,port,out);
-    close(fd); return rc;
+/* ------------------------------ server list ----------------------------- */
+
+/* Spread across operators on purpose: nat_detect probes the first two that
+ * answer, and two probes to one provider share its failure and its blocking.
+ * Ports vary (19302 / 3478 / 443) which also helps on restrictive networks. */
+static const char *DEFAULT_SERVERS[] = {
+    "stun.l.google.com:19302",
+    "stun.cloudflare.com:3478",
+    "stun1.l.google.com:19302",
+    "stun.nextcloud.com:443",
+};
+
+static char g_host[STUN_MAX_SERVERS][160];
+static char g_port[STUN_MAX_SERVERS][8];
+static int  g_nsrv = 0;
+static int  g_parsed = 0;
+
+/* Accepts "host", "host:port", "[v6::literal]" and "[v6::literal]:port".
+ * A bare (unbracketed) IPv6 literal is taken as a host with no port, since its
+ * colons are part of the address. Silently ignores entries it can't use. */
+static void add_server(const char *spec) {
+    if (g_nsrv >= STUN_MAX_SERVERS) return;
+    char tmp[160];
+    snprintf(tmp, sizeof tmp, "%s", spec);
+    char *host = tmp, *port = NULL;
+    if (*host == '[') {
+        char *close = strchr(host, ']');
+        if (!close) return;                          /* unterminated bracket */
+        *close = 0; host++;
+        if (close[1] == ':' && close[2]) port = close + 2;
+    } else {
+        char *last = strrchr(host, ':');
+        /* Only a single colon can be a port separator; several means a bare
+         * IPv6 literal, which cannot carry one. */
+        if (last && strchr(host, ':') == last) { *last = 0; port = last + 1; }
+    }
+    if (!*host) return;
+    snprintf(g_host[g_nsrv], sizeof g_host[0], "%s", host);
+    snprintf(g_port[g_nsrv], sizeof g_port[0], "%s", (port && *port) ? port : "3478");
+    g_nsrv++;
 }
+
+static void parse_servers(void) {
+    if (g_parsed) return;
+    g_parsed = 1;
+    const char *env = getenv("STUN_SERVERS");
+    if (env && *env) {
+        char buf[1024], *save = NULL;
+        snprintf(buf, sizeof buf, "%s", env);
+        for (char *tok = strtok_r(buf, ", \t", &save); tok; tok = strtok_r(NULL, ", \t", &save))
+            add_server(tok);
+    }
+    if (g_nsrv == 0)              /* unset, empty, or every entry unparseable */
+        for (unsigned i = 0; i < sizeof DEFAULT_SERVERS / sizeof DEFAULT_SERVERS[0]; i++)
+            add_server(DEFAULT_SERVERS[i]);
+}
+
+int         stun_server_count(void)      { parse_servers(); return g_nsrv; }
+const char *stun_server_host(int i)      { parse_servers(); return (i>=0 && i<g_nsrv) ? g_host[i] : NULL; }
+const char *stun_server_port(int i)      { parse_servers(); return (i>=0 && i<g_nsrv) ? g_port[i] : NULL; }
+
+/* Try each configured server in turn; first answer wins. */
+static int stun_srflx_af(int fd, int dst_af, ep_t *out) {
+    int n = stun_server_count();
+    for (int i = 0; i < n; i++)
+        if (stun_query_af(fd, dst_af, g_host[i], g_port[i], out) == 0) return 0;
+    return -1;
+}
+int stun_srflx (int fd, ep_t *out) { return stun_srflx_af(fd, AF_INET,  out); }
+int stun_srflx6(int fd, ep_t *out) { return stun_srflx_af(fd, AF_INET6, out); }
 
 #include "net.h"
 nat_type_t nat_detect(int fd, ep_t *mapped) {
-    ep_t a, b; int ga, gb;
-    ga = stun_query_on(fd, "stun.l.google.com",  "19302", &a) == 0;
-    gb = stun_query_on(fd, "stun1.l.google.com", "19302", &b) == 0;
-    if (ga && mapped) *mapped = a;
-    else if (gb && mapped) *mapped = b;
-    if (!ga && !gb) return NAT_UNKNOWN;
-    if (ga && gb)  return ep_eq(&a, &b) ? NAT_CONE : NAT_SYMMETRIC;
-    return NAT_UNKNOWN;
+    /* Take the first TWO servers that actually answer, rather than fixed slots:
+     * a dead first entry would otherwise cost us the comparison entirely. */
+    int n = stun_server_count();
+    ep_t got[2]; int ngot = 0;
+    for (int i = 0; i < n && ngot < 2; i++)
+        if (stun_query_on(fd, g_host[i], g_port[i], &got[ngot]) == 0) ngot++;
+    if (ngot == 0) return NAT_UNKNOWN;
+    if (mapped) *mapped = got[0];
+    if (ngot < 2) return NAT_UNKNOWN;      /* one datapoint cannot tell them apart */
+    return ep_eq(&got[0], &got[1]) ? NAT_CONE : NAT_SYMMETRIC;
 }

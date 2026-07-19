@@ -210,8 +210,6 @@ signaling_t *signaling_open(const char *relay, const char *passphrase, int is_in
     return s;
 }
 
-int signaling_relay_count(signaling_t *s){ return s ? s->nactive : 0; }
-
 int signaling_derive_key(signaling_t *s, uint8_t K[32]) {
     if (session_begin(&s->sess, s->room_code, strlen(s->room_code),
                       s->room_id, strlen(s->room_id), s->is_initiator) != 0) return -1;

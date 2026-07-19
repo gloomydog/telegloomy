@@ -53,13 +53,15 @@ eventual direct channel.
 A single dual-stack UDP socket is bound to a **fixed port** (default 58712).
 The same socket is used for STUN, hole punching, and data — this matters,
 because a NAT mapping is per-socket: STUNning from a different socket would learn
-the wrong mapping.
+the wrong mapping. (If the first punch attempt fails, later attempts rebind to a
+fresh ephemeral port; see §3.6b.)
 
 ### 3.3 Gather candidates
 - **Host candidates**: every non-loopback local address (IPv4, and global IPv6
   if present), each with the bound port.
 - **Server-reflexive (srflx) candidate**: send a STUN Binding Request to a
-  public STUN server; the reply's `XOR-MAPPED-ADDRESS` is your public `ip:port`
+  public STUN server (the configured list is tried in order until one answers);
+  the reply's `XOR-MAPPED-ADDRESS` is your public `ip:port`
   as seen from outside — i.e. the mapping your NAT created for this socket. Two
   srflx candidates are gathered where possible:
   - **IPv4 srflx** — the STUN request goes to the server over IPv4 (reached as a
@@ -75,6 +77,12 @@ the wrong mapping.
 Two STUN probes to *different* servers from the same socket. If both report the
 **same** public mapping → endpoint-independent (**cone**, punchable). If they
 **differ** → **symmetric** (punch may fail). This is printed at startup.
+
+The two probes go to the first two servers that answer from the configured list
+(`STUN_SERVERS`; see README), whose default deliberately spans operators — two
+probes to one provider share that provider's outage and its blocking. If fewer
+than two servers answer, the type is reported `unknown`; the srflx candidate is
+still gathered from whatever did answer, so only the diagnostic is lost.
 
 ### 3.5 Exchange candidates
 The candidate list is serialized, sealed with a K-derived subkey, and sent
@@ -143,6 +151,25 @@ once:
 - **Re-aligns the two sides.** The re-exchange doubles as a barrier that both
   peers pass through together, so their next punch windows overlap again instead
   of drifting further apart.
+
+- **Re-rolls the local mapping.** From attempt 2 on, the socket is also closed
+  and rebound to a fresh **ephemeral** port (bind port 0) before punching. On
+  carrier-CGNAT and commercial-VPN paths the external port a socket is granted
+  is endpoint-dependent luck that re-STUNning cannot change — the retries reuse
+  the same socket, so a run that drew an unpunchable mapping stays unpunchable
+  for all of its attempts. That is precisely why quitting and relaunching the
+  process by hand connects when an in-process retry loop won't: a new socket
+  draws a mapping the peer has never seen. Rebinding does that without a human
+  in the loop. Reusing 58712 would risk being handed back the same CGNAT/VPN
+  mapping, which is why a fresh ephemeral port is deliberate. Disable with
+  `PUNCH_REBIND=0`.
+
+  **This is why the fixed port (§3.2, §5) only covers attempt 1.** That is an
+  acceptable trade: the stateful-firewall behaviour in §5 is what carries the
+  punch in the common case, and rebinding only ever happens once the fixed port
+  has already failed — so easy NATs that punch on attempt 1 keep the benefit of
+  the single firewall rule, and hard ones get a fresh roll instead of four more
+  attempts at a mapping already known not to work.
 
 Each retry is therefore about as fresh as quitting and starting the whole session
 by hand — which is often exactly what makes a stubborn pair finally connect. The
@@ -236,6 +263,13 @@ belt-and-suspenders rule is a single line:
 
 Override the port with `P2P_PORT=<port>` if 58712 is taken.
 
+Note that this rule covers the **first** punch attempt only: retries rebind to a
+fresh ephemeral port (§3.6b), which no static rule can name in advance. Those
+attempts rely entirely on the stateful `RELATED,ESTABLISHED` accept described
+above — which is the mechanism that does the work in the common case anyway. If
+you are behind a genuinely stateless firewall and need every attempt to land on
+the port you opened, set `PUNCH_REBIND=0`.
+
 ---
 
 ## 6. Summary of the flow
@@ -254,6 +288,7 @@ Override the port with `P2P_PORT=<port>` if 58712 is taken.
     │       ├─ a path confirms ──▶ connect() ──▶ keepalive ──▶ direct encrypted transport
     │       └─ ~10s window, no confirm
     │             │
-    └── re-STUN + re-exchange candidates ◀── retry (up to PUNCH_RETRIES)
+    └── rebind to a fresh ephemeral port + re-STUN + re-exchange candidates
+        ◀── retry (up to PUNCH_RETRIES)
                   │
                   └─ all attempts fail ──▶ relay-over-Nostr fallback (chat/file, no voice)

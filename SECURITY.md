@@ -41,7 +41,8 @@ Both peers derive the same public Nostr tag from the code:
 
     tag = hex( Argon2id( code, salt = BLAKE2b("telegloomy-nostr-salt-v1:" || code) )[0..16] )
 
-Argon2id (MODERATE: ~256 MB, ~0.5 s, run once) means the **public** tag cannot
+Argon2id (MODERATE: ~256 MB, well under a second on a normal machine, run once)
+means the **public** tag cannot
 be brute-forced back to the code with a cheap offline dictionary attack — the
 single most important hardening over a naive `hash(code)` tag. Both peers use
 identical parameters, so the derived tag matches deterministically.
@@ -183,7 +184,12 @@ minimising metadata.
 ## 10. Known limitations (out of scope)
 - A relay sees metadata (tag, timing, volume, ephemeral pubkey).
 - After a direct connection, your public IP is visible to the peer and to the
-  STUN server. Run over a VPN/WireGuard interface if you need to hide it.
+  STUN servers. Whichever servers are configured learn your public IP and the
+  rough timing of each session. The default list spans several operators
+  (Google, Cloudflare, Nextcloud), so that exposure is spread rather than
+  concentrated at one; point it anywhere you prefer — including a STUN server
+  you run yourself — with the `STUN_SERVERS` environment variable (see README).
+  Run over a VPN/WireGuard interface if you need to hide the address entirely.
 - The relay-fallback datapath (used when hole punching fails, e.g. symmetric ×
   symmetric NAT) carries the already-encrypted stream, but is high-latency and
   rate-limited: fine for chat, slow for files, **voice disabled** on that path.
