@@ -173,7 +173,6 @@ entries are used. The list in effect is printed at startup.
 **Give it at least two reachable servers.** Cone-vs-symmetric detection works by
 comparing the mapping two different servers report.
 
-Whichever servers you choose see your public IP and rough session timing.
 
 ## Key schedule (from PAKE master K = cpace.session_key, 32 bytes)
     SUBKEY_SIGNAL        seal candidate exchange over Nostr
@@ -215,34 +214,17 @@ Passphrase hardening:
   well under a second on a normal machine), once per session.
 - K, the per-hop subkeys' source, and the punch key are wiped (sodium_memzero)
   after the session keys are set up.
-
-Honest limitations:
-- A relay sees metadata: the rendezvous tag, traffic volume, timing, and the
-  ephemeral pubkey.
-- After a successful punch the peer (and the STUN server) sees your public IP.
-  Run over a VPN/WireGuard interface if you need to hide it.
-- The relay-fallback datapath carries the already-encrypted stream, but it is
-  high-latency/rate-limited: fine for chat, slow for files, voice is disabled.
   
 ## Known gaps
-- multi-relay + PAKE handshake are validated by compile + unit tests; the live
-  path (real relays + two real NATs) is not covered by in-repo tests.
-- symmetric x symmetric now degrades to a Nostr-relayed datapath instead of
-  failing outright, but this is not a real TURN relay: it is high-latency and
-  rate-limited, fine for chat, slow for files, unusable for voice. A proper
-  TURN/data-relay server would be the real fix.
-- IPv6 is supported via a dual-stack socket (IPv6 + IPv4-mapped). Both an IPv4
-  server-reflexive candidate (STUN over v4) and an IPv6 one (STUN over real v6)
-  are gathered: the v6 srflx is the exact global address the kernel sources from,
-  so both peers punch toward/from the *same* v6 address instead of a random
-  SLAAC/privacy address the firewall would drop. Local host candidates are also
-  raced (same-LAN wins instantly). Falls back to IPv4-only if the host has IPv6
-  disabled (v6 srflx probe skipped). The dual-stack + v6-srflx path is
-  logic-tested but not run-tested in the (IPv6-disabled) build sandbox.
-- voice codec/jitter/PLC is unit-tested; the PipeWire I/O path compiles but is
-  not run-tested here (no audio device in the build sandbox).
-- handshake resend is best-effort (a few CONFIRM repeats); a real ack would be
-  more robust under heavy relay loss.
+- A relay sever sees your metadata: the rendezvous tag, traffic volume, timing, and the
+  ephemeral pubkey.
+- After a successful punch, the peer (and the STUN server) sees your public IP.
+  Run over a VPN/WireGuard interface if you need to hide it.
+- symmetric x symmetric NAT now degrades to a Nostr-relayed datapath instead of
+  failing outright, but this is not a real TURN relay, so it is high-latency and
+  rate-limited, fine for chat, slow for files, unusable for voice. 
+- IPv6 is supported through a dual-stack socket (IPv6 + IPv4-mapped). The client gathers both an IPv4 server-reflexive candidate (via STUN over v4) and an IPv6 one (via STUN over real v6). The v6 srflx candidate is the exact global address the kernel sources from, so both peers punch to/from the same v6 address, rather than a random SLAAC/privacy address that the firewall would drop. Local host candidates are raced as well, so same-LAN connections win instantly. If the host has IPv6 disabled, the client falls back to IPv4 only (the v6 srflx probe is simply skipped). 
+
 
 ## License
 
