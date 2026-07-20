@@ -126,21 +126,21 @@ Two things decide whether you get a direct path.
 First, address family. Candidates from both families are raced, so a peer only
 needs *one* family in common with the other side:
 
-                    | v4 only | v6 only | dual (v4+v6)
-        ------------+---------+---------+--------------
-        v4 only     | ok (v4) | RELAY   | ok (v4)
-        v6 only     | RELAY   | ok (v6) | ok (v6)
-        dual        | ok (v4) | ok (v6) | ok (v6 usually wins the race)
+| v4 only | v6 only | dual (v4+v6)|
+| --- | --- |--- | 
+|v4 only     | ok (v4) | RELAY   | ok (v4)|
+|v6 only     | RELAY   | ok (v6) | ok (v6)|
+|dual        | ok (v4) | ok (v6) | ok (v6 usually wins the race)|
 
 **A v4-only peer and a v6-only peer share nothing to punch over, so that pair
 always relays.** 
 
 Second, NAT type. This applies to the pairs that land on IPv4:
 
-                    | cone           | symmetric      | 
-        ------------+----------------+----------------+
-        cone        | direct         | direct         | 
-        symmetric   | direct         | RELAY          |
+| cone           | symmetric      |
+| --- | --- | 
+|cone        | direct         | direct         | 
+|symmetric   | direct         | RELAY          |
 
 
 `ok` / `direct` = hole-punched UDP; P2P chat, file transfer and voice all work.
