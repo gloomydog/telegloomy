@@ -126,8 +126,8 @@ Two things decide whether you get a direct path.
 First, address family. Candidates from both families are raced, so a peer only
 needs *one* family in common with the other side:
 
-| v4 only | v6 only | dual (v4+v6)|
-| --- | --- |--- | ---|
+| --- | v4 only | v6 only | dual (v4+v6)|
+| --- | --- |--- | --- |
 |v4 only     | ok (v4) | RELAY   | ok (v4)|
 |v6 only     | RELAY   | ok (v6) | ok (v6)|
 |dual        | ok (v4) | ok (v6) | ok (v6 usually wins the race)|
@@ -137,7 +137,7 @@ always relays.**
 
 Second, NAT type. This applies to the pairs that land on IPv4:
 
-| cone           | symmetric      |
+| --- | cone           | symmetric      |
 | --- | --- | --- |
 |cone        | direct         | direct         | 
 |symmetric   | direct         | RELAY          |
